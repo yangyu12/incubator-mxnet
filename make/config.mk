@@ -47,6 +47,9 @@ ifndef NVCC
 export NVCC = nvcc
 endif
 
+# set compute arch
+CUDA_ARCH := -gencode arch=compute_61,code=sm_61
+
 # whether compile with options for MXNet developer
 DEV = 0
 
