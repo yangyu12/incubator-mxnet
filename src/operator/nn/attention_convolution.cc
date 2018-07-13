@@ -285,13 +285,13 @@ inline static bool AttConvStorageType(const nnvm::NodeAttrs& attrs,
 
 // backward conv storage type infer method
 inline static bool BackwardAttConvStorageType(const nnvm::NodeAttrs& attrs,
-                                           const int dev_mask,
-                                           DispatchMode* dispatch_mode,
-                                           std::vector<int> *in_attrs,
-                                           std::vector<int> *out_attrs) {
+                                              const int dev_mask,
+                                              DispatchMode* dispatch_mode,
+                                              std::vector<int> *in_attrs,
+                                              std::vector<int> *out_attrs) {
   const AttentionConvolutionParam& param = nnvm::get<AttentionConvolutionParam>(attrs.parsed);
-  uint32_t in_expected = param.no_bias ? 3 : 4;
-  uint32_t out_expected = param.no_bias ? 2 : 3;
+  uint32_t in_expected = param.no_bias ? 4 : 5;
+  uint32_t out_expected = param.no_bias ? 3 : 4;
   CHECK_EQ(in_attrs->size(), in_expected);
   CHECK_EQ(out_attrs->size(), out_expected);
 
@@ -357,6 +357,7 @@ struct AttentionConvolutionGrad {
     const AttentionConvolutionParam& param = nnvm::get<AttentionConvolutionParam>(n->attrs.parsed);
     std::vector<nnvm::NodeEntry> heads(ograds.begin(), ograds.end());
     heads.push_back(n->inputs[attconv::kData]);
+    heads.push_back(n->inputs[attconv::kAttention]);
     heads.push_back(n->inputs[attconv::kWeight]);
     if (!param.no_bias)
       heads.push_back(n->inputs[attconv::kBias]);

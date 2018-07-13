@@ -201,32 +201,42 @@ class AttentionConvolutionOp {
       Shape4(num_, group_, M, N), s);  // num_: batch size  B, group, Cout, H*W
 
     // allocate workspace for attention masked data
-    Tensor<xpu, 1, DType> atted_wksp = ctx.requested[attconv::kTempSpace]
-      .get_space_typed<xpu, 1, DType>(Shape1(col_buffer_size_), s);
-    // caculate the shape of atted_buffer (The same with col_buffer)
-    TShape atted_buffer_shape(num_spatial_axes_ + 1);
-    atted_buffer_shape[0] = conv_in_channels_ * param_.kernel.Size();
-    for (index_t i = 1; i < atted_buffer_shape.ndim(); ++i) {
-      atted_buffer_shape[i] = out_data[0].shape_[i+1];  // B, Cout, H, W
-      // 1: H, 2: W (2D case)
-    }
-    // create an atted buffer using atted_wksp and atted_buffer_shape
-    TBlob atted_buffer(atted_wksp.dptr_, atted_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
-    Tensor<xpu, 3, DType> atted_buffer_3d = atted_buffer.get_with_shape<xpu, 3, DType>(
-      Shape3(group_, K, N), s);
+    // Tensor<xpu, 1, DType> atted_wksp = ctx.requested[attconv::kAttSpace]
+    //   .get_space_typed<xpu, 1, DType>(Shape1(one_buffer_size_), s);
+    //   // caculate the shape of atted_buffer (The same with col_buffer)
+    // TShape atted_buffer_shape(num_spatial_axes_ + 1);
+    // atted_buffer_shape[0] = conv_in_channels_ * param_.kernel.Size();
+    // for (index_t i = 1; i < atted_buffer_shape.ndim(); ++i) {
+    //   atted_buffer_shape[i] = out_data[0].shape_[i+1];  // B, Cout, H, W  1: H, 2: W (2D case)
+    // }
+    //   // create an atted buffer using atted_wksp and atted_buffer_shape
+    // TBlob atted_buffer(atted_wksp.dptr_, atted_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+    // Tensor<xpu, 3, DType> atted_buffer_3d = atted_buffer.get_with_shape<xpu, 3, DType>(
+    //   Shape3(group_, K, N), s);
 
-    // no need to allocating memory and reordering in memory
-    if (is_1x1_) {
+    // calculate the shape of col_buffer: buffer shapes for atted_buffer and col_buffer are the same
+    TShape buffer_shape(num_spatial_axes_ + 1);  // 2D ==> 3
+    buffer_shape[0] = conv_in_channels_ * param_.kernel.Size();  // Cin*k*k
+    for (index_t i = 1; i < buffer_shape.ndim(); ++i) {
+      buffer_shape[i] = out_data[0].shape_[i+1];  // B, Cout, H, W   1: H, 2: W (2D case)
+    }
+
+    if (is_1x1_) {  // only need to allocate memory for atted_data
+      // allocate workspace for atted_buffer
+      Tensor<xpu, 1, DType> workspace = ctx.requested[attconv::kTempSpace]
+        .get_space_typed<xpu, 1, DType>(Shape1(one_buffer_size_), s);
+        // create an atted buffer using workspace and buffer_shape
+      TBlob atted_buffer(workspace.dptr_, buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+      Tensor<xpu, 3, DType> atted_buffer_3d = atted_buffer.get_with_shape<xpu, 3, DType>(
+        Shape3(group_, K, N), s);
+
+      // calculate convolution
       Tensor<xpu, 4, DType> input_4d = in_data[attconv::kData].get_with_shape<xpu, 4, DType>(
         Shape4(num_, group_, K, N), s);
       for (index_t n = 0; n < num_; ++n) {
         Tensor<xpu, 3, DType> input_3d = input_4d[n];
         Tensor<xpu, 3, DType> attention_3d = attention_4d[n];
-        // mask the raw input with attention mask
-        // for (index_t g = 0; g < group_; ++g) {
-        //   mxnet_mul(input_3d[g], attention_3d[g], atted_buffer_3d[g]);
-        // }
-        atted_buffer_3d = input_3d * attention_3d;
+        atted_buffer_3d = input_3d * attention_3d;  // mask the raw input with attention mask
 
         Tensor<xpu, 3, DType> output_3d = output_4d[n];
         for (index_t g = 0; g < group_; ++g) {
@@ -234,18 +244,15 @@ class AttentionConvolutionOp {
         }
       }
     } else {
-      // allocate workspace for col_buffer
+      // allocate workspace for atted_buffer and col_buffer
       Tensor<xpu, 1, DType> workspace = ctx.requested[attconv::kTempSpace]
-        .get_space_typed<xpu, 1, DType>(Shape1(col_buffer_size_), s);
-      // calculate the shape of col_buffer
-      TShape col_buffer_shape(num_spatial_axes_ + 1);  // 2D ==> 3
-      col_buffer_shape[0] = conv_in_channels_ * param_.kernel.Size();  // Cin*k*k
-      for (index_t i = 1; i < col_buffer_shape.ndim(); ++i) {
-        col_buffer_shape[i] = out_data[0].shape_[i+1];  // B, Cout, H, W
-        // 1: H, 2: W (2D case)
-      }
-      // create a column buffer using workspace and col_buffer_shape
-      TBlob col_buffer(workspace.dptr_, col_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+        .get_space_typed<xpu, 1, DType>(Shape1(2 * one_buffer_size_), s);
+        // create an atted buffer using workspace and buffer_shape
+      TBlob atted_buffer(workspace.dptr_, buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+      Tensor<xpu, 3, DType> atted_buffer_3d = atted_buffer.get_with_shape<xpu, 3, DType>(
+        Shape3(group_, K, N), s);
+        // create a column buffer using workspace and buffer_shape
+      TBlob col_buffer(workspace.dptr_+one_buffer_size_, buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
       Tensor<xpu, 3, DType> col_buffer_3d = col_buffer.get_with_shape<xpu, 3, DType>(
         Shape3(group_, K, N), s);
 
@@ -255,11 +262,7 @@ class AttentionConvolutionOp {
                col_buffer.shape_, param_.kernel, param_.pad, param_.stride, param_.dilate,
                col_buffer.dptr<DType>());
         Tensor<xpu, 3, DType> attention_3d = attention_4d[n];
-        // mask the raw input with attention mask
-        // for (index_t g = 0; g < group_; ++g) {
-        //   mxnet_mul(col_buffer_3d[g], attention_3d[g], atted_buffer_3d[g]);
-        // }
-        atted_buffer_3d = col_buffer_3d * attention_3d;
+        atted_buffer_3d = col_buffer_3d * attention_3d;  // mask the raw input with attention mask
 
         Tensor<xpu, 3, DType> output_3d = output_4d[n];
         for (index_t g = 0; g < group_; ++g) {
@@ -300,11 +303,11 @@ class AttentionConvolutionOp {
 
     // initialize weight and col_buffer 3D tensors for using gemm
     // For computing dLoss/d(in_data[kData])
-    index_t M = kernel_dim_;
-    index_t N = conv_out_spatial_dim_;
-    index_t K = conv_out_channels_ / group_;
+    index_t M = kernel_dim_;  // k*k*Cin
+    index_t N = conv_out_spatial_dim_;  // H*W
+    index_t K = conv_out_channels_ / group_;  // Cout
     Tensor<xpu, 4, DType> attention_4d = in_data[attconv::kAttention].get_with_shape<xpu, 4, DType>(
-      Shape4(num_, group_, K, N), s);
+      Shape4(num_, group_, M, N), s);
     Tensor<xpu, 3, DType> weight_3d = in_data[attconv::kWeight].get_with_shape<xpu, 3, DType>(
       Shape3(group_, K, M), s);
     Tensor<xpu, 4, DType> out_grad_4d = out_grad[attconv::kOut].get_with_shape<xpu, 4, DType>(
@@ -314,23 +317,23 @@ class AttentionConvolutionOp {
     Tensor<xpu, 3, DType> dweight_3d = in_grad[attconv::kWeight].get_with_shape<xpu, 3, DType>(
       Shape3(group_, K, M), s);  // For computing dLoss/dWeight
 
-    // allocate workspace for attention masked data
-    Tensor<xpu, 1, DType> atted_wksp = ctx.requested[attconv::kTempSpace]
-      .get_space_typed<xpu, 1, DType>(Shape1(col_buffer_size_), s);
-    // caculate the shape of atted_buffer (The same with col_buffer)
-    TShape atted_buffer_shape(num_spatial_axes_ + 1);
-    atted_buffer_shape[0] = conv_in_channels_ * param_.kernel.Size();
-    for (index_t i = 1; i < atted_buffer_shape.ndim(); ++i) {
-      atted_buffer_shape[i] = out_grad[0].shape_[i+1];  // B, Cout, H, W
-      // 1: H, 2: W (2D case)
+    // calculate the shape of col_buffer: buffer shapes for atted_buffer and col_buffer are the same
+    TShape buffer_shape(num_spatial_axes_ + 1);  // 2D ==> 3
+    buffer_shape[0] = conv_in_channels_ * param_.kernel.Size();  // Cin*k*k
+    for (index_t i = 1; i < buffer_shape.ndim(); ++i) {
+      buffer_shape[i] = out_grad[attconv::kOut].shape_[i+1];  // B, Cout, H, W   1: H, 2: W (2D case)
     }
-    // create an atted buffer using atted_wksp and atted_buffer_shape
-    TBlob atted_buffer(atted_wksp.dptr_, atted_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
-    Tensor<xpu, 3, DType> atted_buffer_3d = atted_buffer.get_with_shape<xpu, 3, DType>(
-      Shape3(group_, M, N), s);
 
-    // no need to allocating memory and reordering in memory
-    if (is_1x1_) {
+    if (is_1x1_) {  // only need to allocate memory for atted_data
+      // allocate workspace for attention masked data
+      Tensor<xpu, 1, DType> workspace = ctx.requested[attconv::kTempSpace]
+        .get_space_typed<xpu, 1, DType>(Shape1(one_buffer_size_), s);
+        // create an atted buffer using workspace and buffer_shape
+      TBlob atted_buffer(workspace.dptr_, buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+      Tensor<xpu, 3, DType> atted_buffer_3d = atted_buffer.get_with_shape<xpu, 3, DType>(
+        Shape3(group_, M, N), s);
+
+      // calculate gradient
       Tensor<xpu, 4, DType> input_4d = in_data[attconv::kData].get_with_shape<xpu, 4, DType>(
         Shape4(num_, group_, M, N), s);
       Tensor<xpu, 4, DType> in_data_grad_4d = in_grad[attconv::kData].get_with_shape<xpu, 4, DType>(
@@ -347,17 +350,10 @@ class AttentionConvolutionOp {
         }
 
         // gradient w.r.t. input data and attention
-        // for (index_t g = 0; g < group_; ++g) {
-        //   mxnet_mul(atted_buffer_3d[g], attention_3d[g], in_data_grad_3d[g]);
-        //   mxnet_mul(atted_buffer_3d[g], input_3d[g], in_att_grad_3d[g]);
-        // }
         in_data_grad_3d = atted_buffer_3d * attention_3d;
         in_att_grad_3d = atted_buffer_3d * input_3d;
 
         // mask the raw input with attention mask. Now the atted_buffer_3d store the masked input.
-        // for (index_t g = 0; g < group_; ++g) {
-        //   mxnet_mul(input_3d[g], attention_3d[g], atted_buffer_3d[g]);
-        // }
         atted_buffer_3d = input_3d * attention_3d;
 
         // gradient w.r.t. weight
@@ -367,56 +363,52 @@ class AttentionConvolutionOp {
         }
       }
     } else {
-      // allocate workspace for col_buffer
+      // allocate workspace for atted_buffer and col_buffer
       Tensor<xpu, 1, DType> workspace = ctx.requested[attconv::kTempSpace]
-        .get_space_typed<xpu, 1, DType>(Shape1(col_buffer_size_), s);
-      // calculate the shape of col_buffer
-      TShape col_buffer_shape(num_spatial_axes_ + 1);
-      col_buffer_shape[0] = conv_in_channels_ * param_.kernel.Size();
-      for (index_t i = 1; i < col_buffer_shape.ndim(); ++i) {
-        col_buffer_shape[i] = out_grad[attconv::kData].shape_[i+1];
-      }
-      // create a column buffer using workspace and col_buffer_shape
-      TBlob col_buffer(workspace.dptr_, col_buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+        .get_space_typed<xpu, 1, DType>(Shape1(2 * one_buffer_size_), s);
+        // create an atted buffer using workspace and buffer_shape
+      TBlob atted_buffer(workspace.dptr_, buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
+      Tensor<xpu, 3, DType> atted_buffer_3d = atted_buffer.get_with_shape<xpu, 3, DType>(
+        Shape3(group_, M, N), s);
+        // create a column buffer using workspace and col_buffer_shape
+      TBlob col_buffer(workspace.dptr_+one_buffer_size_, buffer_shape, xpu::kDevMask, DataType<DType>::kFlag);
       Tensor<xpu, 3, DType> col_buffer_3d = col_buffer.get_with_shape<xpu, 3, DType>(
         Shape3(group_, M, N), s);
 
-      Tensor<xpu, 4, DType> input_4d = in_data[attconv::kData].get_with_shape<xpu, 4, DType>(
-        Shape4(num_, group_, M, N), s);
-      // compute gradient
       for (index_t n = 0; n < num_; ++n) {
-        Tensor<xpu, 3, DType> input_3d = input_4d[n];
         Tensor<xpu, 3, DType> attention_3d = attention_4d[n];
         Tensor<xpu, 3, DType> out_grad_3d = out_grad_4d[n];
         Tensor<xpu, 3, DType> in_att_grad_3d = in_att_grad_4d[n];
-        // gradient w.r.t. masked data
+
+        // gradient w.r.t. masked data (stored into atted_buffer_3d)
         for (index_t g = 0; g < group_; ++g) {
           // Legacy approach shown here for comparison:
           //   col_buffer_3d[g] = dot(weight_3d[g].T(), out_grad_3d[g]);
           linalg_gemm(weight_3d[g], out_grad_3d[g], atted_buffer_3d[g], true, false, s);
         }
 
-        // gradient w.r.t. input data and attention
-        // for (index_t g = 0; g < group_; ++g) {
-        //   mxnet_mul(atted_buffer_3d[g], attention_3d[g], col_buffer_3d[g]);
-        //   mxnet_mul(atted_buffer_3d[g], input_3d[g], in_att_grad_3d[g]);
-        // }
+        // gradient w.r.t. input data (col_buffer_3d --> in_grad)
         col_buffer_3d = atted_buffer_3d * attention_3d;
-        in_att_grad_3d = atted_buffer_3d * input_3d;
-
         col2im(s, col_buffer.dptr<DType>(), in_grad[attconv::kData].shape_, col_buffer.shape_,
                param_.kernel, param_.pad, param_.stride, param_.dilate,
                in_grad[attconv::kData].dptr<DType>()+n*input_dim_, req[attconv::kData]);
 
-        // gradient w.r.t. weight, dWeight should accumulate across the batch and group
+        // gradient w.r.t. attention (col_buffer is changed, )
         im2col(s, in_data[attconv::kData].dptr<DType>()+n*input_dim_, in_data[attconv::kData].shape_,
                col_buffer.shape_, param_.kernel, param_.pad, param_.stride, param_.dilate,
                col_buffer.dptr<DType>());
-        // for (index_t g = 0; g < group_; ++g) {
-        //   mxnet_mul(col_buffer_3d[g], attention_3d[g], atted_buffer_3d[g]);
+        // print the col_buffer
+        // for (index_t i = 0; i < col_buffer_3d.size(1); i++) {
+        //   for (index_t j = 0; j < col_buffer_3d.size(2); j++) {
+        //     printf("col_buffer[%u][%u]=%f\t", i, j, col_buffer_3d[0][i][j]);
+        //   }
+        //   printf("\n");
         // }
-        atted_buffer_3d = col_buffer_3d * attention_3d;
 
+        in_att_grad_3d = atted_buffer_3d * col_buffer_3d;
+
+        // gradient w.r.t. weight (atted_buffer is changed), dWeight should accumulate across the batch and group
+        atted_buffer_3d = col_buffer_3d * attention_3d;
         for (index_t g = 0; g < group_; ++g) {
           auto request = (n == 0) ? req[attconv::kWeight] : kAddTo;
           // Legacy approach shown here for comparison:
@@ -461,7 +453,7 @@ class AttentionConvolutionOp {
     col_offset_ = kernel_dim_ * conv_out_spatial_dim_;
     output_offset_ = conv_out_channels_ * conv_out_spatial_dim_ / group_;
     // size of the column buffer used for storing im2col-ed pixels
-    col_buffer_size_ = kernel_dim_ * group_ * conv_out_spatial_dim_;
+    one_buffer_size_ = kernel_dim_ * group_ * conv_out_spatial_dim_;
     // input/output image size (#channels * height * width)
     input_dim_ = ishape.ProdShape(1, ishape.ndim());
     output_dim_ = oshape.ProdShape(1, oshape.ndim());
@@ -483,7 +475,7 @@ class AttentionConvolutionOp {
   index_t weight_offset_;  // number of output channels per group * kernel_dim_
   index_t col_offset_;
   index_t output_offset_;
-  index_t col_buffer_size_;
+  index_t one_buffer_size_;
   index_t input_dim_;
   index_t output_dim_;
   index_t num_kernels_im2col_;
@@ -499,6 +491,7 @@ void AttentionConvolutionCompute(const nnvm::NodeAttrs& attrs,
                                  const std::vector<OpReqType>& req,
                                  const std::vector<TBlob>& outputs) {
   const AttentionConvolutionParam& param = nnvm::get<AttentionConvolutionParam>(attrs.parsed);
+  // printf("Forward pass inputs size: %d\n", inputs.size());
   MSHADOW_REAL_TYPE_SWITCH(inputs[attconv::kData].type_flag_, DType, {
     AttentionConvolutionOp<xpu, DType> op;
     op.Init(param);
@@ -508,13 +501,16 @@ void AttentionConvolutionCompute(const nnvm::NodeAttrs& attrs,
 
 template<typename xpu>
 void AttentionConvolutionGradCompute(const nnvm::NodeAttrs& attrs,
-                                     const OpContext& ctx, const std::vector<TBlob>& inputs,
+                                     const OpContext& ctx,
+                                     const std::vector<TBlob>& inputs,
                                      const std::vector<OpReqType>& req,
                                      const std::vector<TBlob>& outputs) {
   const AttentionConvolutionParam& param = nnvm::get<AttentionConvolutionParam>(attrs.parsed);
+  // printf("Backward pass inputs size: %d\n", inputs.size());
   std::vector<TBlob> in_data(inputs.begin() + 1, inputs.end());
   const TBlob &out_grad = inputs[0];
   const std::vector<TBlob> &in_grad = outputs;
+  // print(in_data.size())
 
   MSHADOW_REAL_TYPE_SWITCH(out_grad.type_flag_, DType, {
     AttentionConvolutionOp<xpu, DType> op;

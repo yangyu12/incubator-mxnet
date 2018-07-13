@@ -481,7 +481,7 @@ def assert_almost_equal(a, b, rtol=None, atol=None, names=('a', 'b'), equal_nan=
     atol = get_atol(atol)
 
     if almost_equal(a, b, rtol, atol, equal_nan=equal_nan):
-        return
+        return True
 
     index, rel = find_max_violation(a, b, rtol, atol)
     np.set_printoptions(threshold=4, suppress=True)
@@ -490,7 +490,9 @@ def assert_almost_equal(a, b, rtol=None, atol=None, names=('a', 'b'), equal_nan=
                                     " Location of maximum error:%s, a=%f, b=%f"
                             % (rel, rtol, atol, str(index), a[index], b[index]),
                             names=names)
-    raise AssertionError(msg)
+    # raise AssertionError(msg)
+    print(msg)
+    return False
 
 
 def almost_equal_ignore_nan(a, b, rtol=None, atol=None):
@@ -910,16 +912,18 @@ def check_numeric_gradient(sym, location, aux_states=None, numeric_eps=1e-3, rto
         orig_grad = args_grad_npy[name]
         sym_grad = symbolic_grads[name]
         if grad_req[name] == 'write':
-            assert_almost_equal(fd_grad, sym_grad, rtol, atol,
-                                ("NUMERICAL_%s"%name, "BACKWARD_%s"%name))
+            is_pass = assert_almost_equal(fd_grad, sym_grad, rtol, atol,
+                                          ("NUMERICAL_%s"%name, "BACKWARD_%s"%name))
         elif grad_req[name] == 'add':
-            assert_almost_equal(fd_grad, sym_grad - orig_grad, rtol, atol,
+            is_pass = assert_almost_equal(fd_grad, sym_grad - orig_grad, rtol, atol,
                                 ("NUMERICAL_%s"%name, "BACKWARD_%s"%name))
         elif grad_req[name] == 'null':
-            assert_almost_equal(orig_grad, sym_grad, rtol, atol,
+            is_pass = assert_almost_equal(orig_grad, sym_grad, rtol, atol,
                                 ("NUMERICAL_%s"%name, "BACKWARD_%s"%name))
         else:
             raise ValueError("Invalid grad_req %s for argument %s"%(grad_req[name], name))
+        test_msg = 'pass' if is_pass else 'fail'
+        print('numeric gradient for {}\t{}'.format(name, test_msg))
 
 
 def check_symbolic_forward(sym, location, expected, rtol=1E-4, atol=None,
