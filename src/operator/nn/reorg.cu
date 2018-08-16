@@ -29,9 +29,9 @@ __global__ void ReorgForwardKernel(
         int data_h = out_h * stride_h - pad_h + s_h * dilate_h;
 
         int data_dim = data_height * data_width;
-        int out_dim = kernel_h * kernel_w * out_height * out_width;
+        // int out_dim = kernel_h * kernel_w * out_height * out_width;
 
-        out[ch * out_dim + index] =
+        out[index] =
             (0 <= data_h && data_h < data_height && 0 <= data_w && data_w < data_width) ?
             data[ch * data_dim + data_h * data_height + data_w] : static_cast<DType>(0);
     }
@@ -45,22 +45,27 @@ __global__ void ReorgBackwardKernel(
     int dilate_h, int dilate_w, int pad_h, int pad_w,
     DType* dData) {
 
-    // each kernel is for each sample n == C * s * s * H' * W'
+    // each kernel is for each data item n == C * H * W
     CUDA_KERNEL_LOOP(index, n) {
-        int out_w = index % out_width;
-        int out_h = index / out_width % out_height;
-        int s_w = index / out_width / out_height % kernel_w;
-        int s_h = index / out_width / out_height / kernel_w % kernel_h;
-        int ch = index / out_width / out_height / kernel_w / kernel_h;
+        int data_w = index % data_width;
+        int data_h = index / data_width % data_height;
+        int ch = index /data_width / data_height;
 
-        int data_w = out_w * stride_w - pad_w + s_w * dilate_w;
-        int data_h = out_h * stride_h - pad_h + s_h * dilate_h;
-
-        int data_dim = data_height * data_width;
-        int out_dim = kernel_h * kernel_w * out_height * out_width;
-
-        if (0 <= data_h && data_h < data_height && 0 <= data_w && data_w < data_width)
-            dData[ch * data_dim + data_h * data_height + data_w] += dOut[ch * out_dim + index];
+        DType val = static_cast<DType>(0);
+        for (int s_h = 0; s_h < kernel_h; ++s_h) {
+            for (int s_w = 0; s_w < kernel_w; ++s_w) {
+                int x_prime = data_w + pad_w - s_w * dilate_w;
+                int y_prime = data_h + pad_h - s_h * dilate_h;
+                if (x_prime >= 0 && x_prime % stride_w == 0 &&
+                    y_prime >= 0 && y_prime % stride_h == 0) {
+                    int out_w = x_prime / stride_w;
+                    int out_h = y_prime / stride_h;
+                    if (out_w < out_width && out_h < out_height)
+                        val += dOut[(((ch * kernel_h + s_h) * kernel_w + s_w) * out_height + out_h) * out_width + out_w];
+                }
+            }
+        }
+        dData[index] += val;
     }
 }
 }  // namespace cuda
@@ -87,10 +92,10 @@ inline void ReorgForward(
         Tensor<gpu, 3, DType> input_3d = data[n];
         Tensor<gpu, 3, DType> output_3d = out[n];
         cuda::ReorgForwardKernel<DType>
-            <<<cuda_get_num_blocks(num_threads), kBaseThreadNum,
+            <<<cuda_get_num_blocks(num_threads), cuda::kBaseThreadNum,
                0, Stream<gpu>::GetStream(output_3d.stream_)>>>(
-            num_threads, input_3d.dptr<DType>(), data_height, data_width, out_height, out_width,
-            kernel_h, kernel_w, stride_h, stride_w, dilate_h, dilate_w, pad_h, pad_w, output_3d.dptr<DType>());
+            num_threads, input_3d.dptr_, data_height, data_width, out_height, out_width,
+            kernel_h, kernel_w, stride_h, stride_w, dilate_h, dilate_w, pad_h, pad_w, output_3d.dptr_);
         MSHADOW_CUDA_POST_KERNEL_CHECK(ReorgForwardKernel);
     }
 }
@@ -112,15 +117,15 @@ inline void ReorgBackward(
     int out_height = dOut.shape_[2];
     int out_width = dOut.shape_[3];
 
-    int num_threads = channels * kernel_h * kernel_w * out_height * out_width;
+    int num_threads = channels * data_height * data_width;
     for (int n = 0; n < num; ++n) {
         Tensor<gpu, 3, DType> ingrad_3d = dData[n];
         Tensor<gpu, 3, DType> outgrad_3d = dOut[n];
         cuda::ReorgBackwardKernel<DType>
-            <<<cuda_get_num_blocks(num_threads), kBaseThreadNum,
+            <<<cuda_get_num_blocks(num_threads), cuda::kBaseThreadNum,
                0, Stream<gpu>::GetStream(ingrad_3d.stream_)>>>(
-            num_threads, outgrad_3d.dptr<DType>(), data_height, data_width, out_height, out_width,
-            kernel_h, kernel_w, stride_h, stride_w, dilate_h, dilate_w, pad_h, pad_w, ingrad_3d.dptr<DType>());
+            num_threads, outgrad_3d.dptr_, data_height, data_width, out_height, out_width,
+            kernel_h, kernel_w, stride_h, stride_w, dilate_h, dilate_w, pad_h, pad_w, ingrad_3d.dptr_);
         MSHADOW_CUDA_POST_KERNEL_CHECK(ReorgBackwardKernel);
     }
 }

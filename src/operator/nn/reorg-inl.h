@@ -4,6 +4,7 @@
 #include <dmlc/logging.h>
 #include <dmlc/parameter.h>
 #include <mxnet/operator.h>
+#include "../operator_common.h"
 
 namespace mxnet {
 namespace op {
@@ -13,7 +14,7 @@ enum ReorgOpInputs {kData};
 enum ReorgOpOutputs {kOut};
 }  // namespace reorg
 
-struct ReorgParam : public dmlc::Paramter<ReorgParam> {
+struct ReorgParam : public dmlc::Parameter<ReorgParam> {
     TShape kernel;
     TShape stride;
     TShape dilate;
@@ -39,13 +40,13 @@ struct ReorgParam : public dmlc::Paramter<ReorgParam> {
     }
 };
 
-void ConvolutionParamParser(nnvm::NodeAttrs* attrs);
+void ReorgParamParser(nnvm::NodeAttrs* attrs);
 
 template<typename xpu, typename DType>
-class ReorgOp : public operator {
-public:
-    explicit ReorgOp(ReorgParam p) {
-        this->param = p;
+class ReorgOp {
+  public:
+    void Init(ReorgParam p) {
+        this->param_ = p;
     }
 
     virtual void Forward(const OpContext &ctx,
@@ -63,8 +64,8 @@ public:
         CHECK_EQ(data.CheckContiguous(), true);
         CHECK_EQ(out.CheckContiguous(), true);
 
-        ReorgForward(data, out, param.kernel[0], param.kernel[1], param.stride[0], param.stride[1],
-                     param.dilate[0], param.dilate[1], param.pad[0], param.pad[1]);
+        ReorgForward(data, out, param_.kernel[0], param_.kernel[1], param_.stride[0], param_.stride[1],
+                     param_.dilate[0], param_.dilate[1], param_.pad[0], param_.pad[1]);
     }
 
     virtual void Backward(const OpContext &ctx,
@@ -76,7 +77,6 @@ public:
         // check a lot of info
         CHECK_EQ(out_grad.size(), 1);
         CHECK_EQ(in_data.size(), 1);
-        CHECK_EQ(out_data.size(), 1);
         CHECK_EQ(in_grad.size(), 1);
         Stream<xpu> *s = ctx.get_stream<xpu>();
 
@@ -90,13 +90,13 @@ public:
             if (req[reorg::kData] == kWriteTo) {
                 dData = static_cast<DType>(0);
             }
-            ReorgBackward(dData, dOut, param.kernel[0], param.kernel[1], param.stride[0], param.stride[1],
-                          param.dilate[0], param.dilate[1], param.pad[0], param.pad[1]);
+            ReorgBackward(dData, dOut, param_.kernel[0], param_.kernel[1], param_.stride[0], param_.stride[1],
+                          param_.dilate[0], param_.dilate[1], param_.pad[0], param_.pad[1]);
         }
     }
 
-private:
-    ReorgParam param;
+  private:
+    ReorgParam param_;
 };  // class ReorgOp
 
 template<typename xpu>
@@ -106,7 +106,8 @@ void ReorgCompute(const nnvm::NodeAttrs& attrs,
                   const std::vector<TBlob>& outputs) {
     const ReorgParam& param = nnvm::get<ReorgParam>(attrs.parsed);
     MSHADOW_REAL_TYPE_SWITCH(inputs[reorg::kData].type_flag_, DType, {
-        ReorgOp<xpu, DType> op(param);
+        ReorgOp<xpu, DType> op;
+        op.Init(param);
         op.Forward(ctx, inputs, req, outputs);
     });
 }
@@ -122,7 +123,8 @@ void ReorgGradCompute(const nnvm::NodeAttrs& attrs,
     const std::vector<TBlob> &in_grad = outputs;
 
     MSHADOW_REAL_TYPE_SWITCH(out_grad.type_flag_, DType, {
-        ReorgOp<xpu, DType> op(param);
+        ReorgOp<xpu, DType> op;
+        op.Init(param);
         op.Backward(ctx, std::vector<TBlob>{out_grad}, in_data, req, in_grad);
     });
 }
